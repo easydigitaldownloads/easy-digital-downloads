@@ -1979,6 +1979,7 @@ class EDD_Payment {
 			switch ( $status ) {
 				case 'refunded':
 					$this->process_refund();
+					do_action( 'edd_update_payment_status', $this->ID, $status, $old_status );
 					break;
 				case 'failed':
 					$this->process_failure();
@@ -1986,14 +1987,6 @@ class EDD_Payment {
 				case 'pending' || 'processing':
 					$this->process_pending();
 					break;
-			}
-
-			do_action( 'edd_update_payment_status', $this->ID, $status, $old_status );
-
-			if ( 'complete' === $old_status ) {
-				// Trigger the action again to account for add-ons listening for status changes from "publish".
-
-				do_action( 'edd_update_payment_status', $this->ID, $status, 'publish' );
 			}
 		}
 
