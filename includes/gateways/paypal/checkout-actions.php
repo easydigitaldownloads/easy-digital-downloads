@@ -128,12 +128,13 @@ function create_order( $purchase_data ) {
 
 	try {
 		// Create pending payment in EDD.
+		$currency     = edd_get_currency();
 		$payment_args = array(
 			'price'        => $purchase_data['price'],
 			'date'         => $purchase_data['date'],
 			'user_email'   => $purchase_data['user_email'],
 			'purchase_key' => $purchase_data['purchase_key'],
-			'currency'     => edd_get_currency(),
+			'currency'     => $currency,
 			'downloads'    => $purchase_data['downloads'],
 			'cart_details' => $purchase_data['cart_details'],
 			'user_info'    => $purchase_data['user_info'],
@@ -154,20 +155,84 @@ function create_order( $purchase_data ) {
 			);
 		}
 
+		$order_subtotal = $purchase_data['subtotal'];
+		// Create an array of items for the order.
+		$items = array();
+		$i     = 0;
+		if ( is_array( $purchase_data['cart_details'] ) && ! empty( $purchase_data['cart_details'] ) ) {
+			foreach ( $purchase_data['cart_details'] as $item ) {
+				$item_amount = round( ( $item['subtotal'] / $item['quantity'] ) - ( $item['discount'] / $item['quantity'] ), 2 );
+
+				if ( $item_amount <= 0 ) {
+					$item_amount = 0;
+				}
+				$items[ $i ] = array(
+					'name'        => stripslashes_deep( html_entity_decode( edd_get_cart_item_name( $item ), ENT_COMPAT, 'UTF-8' ) ),
+					'quantity'    => $item['quantity'],
+					'unit_amount' => array(
+						'currency_code' => $currency,
+						'value'         => edd_sanitize_amount( $item_amount ),
+					),
+				);
+				if ( (float) $item['discount'] > 0 ) {
+					$order_subtotal -= ( $item['discount'] * $item['quantity'] );
+				}
+				if ( edd_use_skus() ) {
+					$items[ $i ]['sku'] = edd_get_download_sku( $item['id'] );
+				}
+				$i++;
+			}
+		}
+
+		$discount = 0;
+		// Fees which are not item specific need to be added to the PayPal data as order items.
+		if ( ! empty( $purchase_data['fees'] ) ) {
+			foreach ( $purchase_data['fees'] as $fee ) {
+				if ( ! empty( $fee['download_id'] ) ) {
+					continue;
+				}
+				// Positive fees.
+				if ( floatval( $fee['amount'] ) > 0 ) {
+					$items[ $i ] = array(
+						'name'        => stripslashes_deep( html_entity_decode( wp_strip_all_tags( $fee['label'] ), ENT_COMPAT, 'UTF-8' ) ),
+						'unit_amount' => array(
+							'currency_code' => $currency,
+							'value'         => edd_sanitize_amount( $fee['amount'] ),
+						),
+						'quantity'    => 1,
+					);
+					$order_subtotal += abs( $fee['amount'] );
+					$i++;
+				} else {
+					// This is a negative fee (discount) not assigned to a specific Download
+					$discount += abs( $fee['amount'] );
+				}
+			}
+		}
+
+		$tax          = (float) $purchase_data['tax'] > 0 ? $purchase_data['tax'] : 0;
 		$order_amount = array(
-			'currency_code' => edd_get_currency(),
-			'value'         => (string) $purchase_data['price']
-		);
-		if ( (float) $purchase_data['tax'] > 0 ) {
-			$order_amount['breakdown'] = array(
+			'currency_code' => $currency,
+			'value'         => (string) ( $order_subtotal + $tax - $discount ),
+			'breakdown'     => array(
 				'item_total' => array(
-					'currency_code' => edd_get_currency(),
-					'value'         => (string) ( $purchase_data['price'] - $purchase_data['tax'] )
+					'currency_code' => $currency,
+					'value'         => (string) $order_subtotal,
 				),
-				'tax_total'  => array(
-					'currency_code' => edd_get_currency(),
-					'value'         => (string) $purchase_data['tax']
-				)
+			),
+		);
+		if ( $tax > 0 ) {
+			$order_amount['breakdown']['tax_total'] = array(
+				'currency_code' => $currency,
+				'value'         => (string) $tax,
+			);
+		}
+
+		// This is only added by negative global fees.
+		if ( $discount > 0 ) {
+			$order_amount['breakdown']['discount'] = array(
+				'currency_code' => $currency,
+				'value'         => (string) $discount,
 			);
 		}
 
@@ -178,8 +243,9 @@ function create_order( $purchase_data ) {
 					// @todo We could put the breakdown here (tax, discount, etc.)
 					'reference_id' => $payment_args['purchase_key'],
 					'amount'       => $order_amount,
-					'custom_id'    => $payment_id
-				)
+					'custom_id'    => $payment_id,
+					'items'        => $items,
+				),
 			),
 			'application_context'  => array(
 				//'locale'              => get_locale(), // PayPal doesn't like this. Might be able to replace `_` with `-`
